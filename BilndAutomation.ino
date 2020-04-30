@@ -1,23 +1,42 @@
 #include <ESP8266WebServer.h>
 #include <ESP8266mDNS.h>
 #import "MainPageHtml.h"
+#include <EEPROM.h>
 
-  const char* ssid = "MyWifi";  //"CGOffice"; //
+  const char* ssid = "CGOffice"; //"MyWifi";  //"CGOffice"; //
   const char* password = "3132143880";
   ESP8266WebServer server(80);
 
+  //Properties
+  int eepromStepsStart = 0;
+  int eepromStepsLen = 5;
+  int eepromLocationStart = 5;
+  int eepromLocationLen = 2;
+  int eepromOpenCloseStepsStart = 7;
+  int eepromOpenCloseStepsLen = 5;
+
   const int led = 13;
+  int stepsPerRotation = 4096;
+  int currentLocation = 1;        //1 = Up , 2 = Middle, 3 = Down
+  int OpenCloseSteps = 0;
 
 
   String rotationInfo = "";
   boolean Direction = true;
   int MotorType = 2;   // 1 = Nema , 2 = SmallMotor 284 something
 
-
+#if(1 == 1)
+  uint8_t ConfigPin1 = 5; //D1;
+  uint8_t ConfigPin2 = 4; //D2;
+  uint8_t ConfigPin3 = 0; //D3;
+  uint8_t ConfigPin4 = 2; //D4;
+#else
   uint8_t ConfigPin1 = D1;
   uint8_t ConfigPin2 = D2;
   uint8_t ConfigPin3 = D3;
   uint8_t ConfigPin4 = D4;
+#endif
+  
 
   const int enablePin = ConfigPin1; 
   const int stepPin = ConfigPin3; 
@@ -30,8 +49,10 @@
   uint8_t IN4 = ConfigPin4;
   int Step28MotorSteps = 0;
 
+  
+
 void setup(void) {
-    
+  EEPROM.begin(512);
   pinMode(led, OUTPUT);
 
   pinMode(ConfigPin1, OUTPUT);    
@@ -41,9 +62,32 @@ void setup(void) {
   
   digitalWrite(enablePin,LOW);
 
-  delay(3000);
+  delay(1000);
   digitalWrite(led, 0);
   Serial.begin(115200);
+
+  //EepromSave(0, 10, "test");
+  //EepromSave(10, 5, "n2-5");
+  //EepromSave(20, 3, "testing");
+  
+  //Serial.println("done saving");
+  //Serial.println(EepromGet(0, 10));
+  //Serial.println(EepromGet(10, 5));
+  //Serial.println(EepromGet(20, 3));
+  //Serial.println("done get");
+  Serial.println("----");
+  Serial.println(stepsPerRotation);
+  int valSteps = EepromGetInt(eepromStepsStart,eepromStepsLen);
+  if(valSteps > 0) {  stepsPerRotation = valSteps; }
+
+  int valLocation = EepromGetInt(eepromLocationStart,eepromLocationLen);
+  if(valLocation > 0) {  currentLocation = valLocation; }
+
+  int valOpenCloseSteps = EepromGetInt(eepromOpenCloseStepsStart,eepromOpenCloseStepsLen);
+  if(valOpenCloseSteps > 0) {  OpenCloseSteps = valOpenCloseSteps; }
+
+  //EepromSaveInt(30, 2, 12);
+  //int val2 = EepromGetInt(30,2);
   
   WiFi.persistent(false);
   WiFi.disconnect(true);
@@ -73,9 +117,16 @@ void setup(void) {
   server.on("/getMotorStatus", []() {    server.send(200, "text/plain", "Motor Status Result");  });
   server.on("/test", handleRoot);
   server.on("/paramtest", []() {    server.send(200, "text/plain", server.arg("PARAM1"));  });
-  server.on("/SetMotorLocation", SetMotorTemp);
+  server.on("/SetMotor", ProcessMotorAction);
+  server.on("/SetStepsPerRotation", SetStepPerRotation);
+  server.on("/SetOpenCloseSteps", SetStepToOpenAndClose);
   server.on("/SetEnableMotor", SetEnableMotor);
+  server.on("/SetBlindOpen", SetBlindOpen);
+  server.on("/SetBlindClosed", SetBlindClosed);
 
+  server.on("/TurnOff", Step28TurnOffMotor);
+
+  
   //server.onNotFound(handleNotFound);
 
   server.begin();
@@ -94,25 +145,38 @@ void loop() {
 //===============================================================
 void handleRoot() {
   String s = MAIN_page; //Read HTML contents
+  s.replace("%stepsPerRotation%", String(stepsPerRotation));
+  s.replace("%currentLocation%", String(currentLocation));
+  s.replace("%OpenCloseSteps%", String(OpenCloseSteps)); 
+
   server.send(200, "text/html", s); //Send web page
 }
 
 
-void SetMotorTemp()
+void ProcessMotorAction()
 {
   String msg = "";
   Serial.println("starting");
   
   rotationInfo = "";
-  if (server.hasArg("STEPS") && server.hasArg("CLOCK")) 
+  if (server.hasArg("CLOCK") && (server.hasArg("STEPS") || server.hasArg("ROTATIONS"))) 
   {
     msg += "Params Found - 1 \n\n";
     int steps;
     int delayValue = 100;
     bool turnOffMotor = true;
     bool clockWise;
+
+    if(server.hasArg("ROTATIONS"))
+    {
+      float rotations = server.arg("ROTATIONS").toFloat();
+      steps = rotations * stepsPerRotation;
+    } 
+    else
+    {
+      steps = server.arg("STEPS").toInt();
+    }
     
-    steps = server.arg("STEPS").toInt();
     clockWise = server.arg("CLOCK") == "1";
     Direction = clockWise;    //!Direction;  
 
@@ -129,17 +193,12 @@ void SetMotorTemp()
     msg += "Value B: " + String(steps) + " \n\n"; 
     msg += "Value D: " + String(Direction) + " \n\n"; 
 
-    if(MotorType == 1){
-      ProcessNemaMotorAction(steps, delayValue);
-    }
-    else if(MotorType == 2){
-      ProcessStep28MotorAction(steps, delayValue, turnOffMotor);
-    }
+    
     
     msg += "Stage - 2 \n\n"; 
     rotationInfo = rotationInfo + "Starting Rotation Set" + "\n";
 
-    
+    ActionMotor(steps, delayValue, turnOffMotor);
     
     msg += rotationInfo; 
   }
@@ -150,6 +209,118 @@ void SetMotorTemp()
   Serial.println("finished");
   Serial.println(msg);
   server.send(200, "text/plain", msg);  
+}
+
+
+void SetEnableMotor()
+{
+  String msg = "";
+  
+  if(server.hasArg("ENABLEPIN")){
+      msg += "Motor Param Found \n\n";
+      bool enablePinBool = server.arg("ENABLEPIN") == "1";
+      if(enablePinBool){
+        digitalWrite(stepPin,HIGH); 
+        server.send(200, "text/plain", "Pin Set HIGH");  
+      }
+      else{
+        digitalWrite(stepPin,LOW); 
+        server.send(200, "text/plain", "Pin Set LOW");  
+      }
+  }
+  server.send(200, "text/plain", "Now Param Found: ENABLEPIN");    
+}
+
+
+void SetStepPerRotation()
+{
+  String msg = "";
+  
+  if(server.hasArg("STEPS")){
+      msg += "Steps Param Found \n\n";
+      stepsPerRotation = server.arg("STEPS").toInt();
+      EepromSaveInt(eepromStepsStart, eepromStepsLen, stepsPerRotation);
+      msg += "Steps Updated and saved";
+      server.send(200, "text/plain", msg);  
+  }
+  server.send(200, "text/plain", "Now Param Found: STEPS");    
+}
+
+void SetStepToOpenAndClose()
+{
+  String msg = "";
+  
+  if(server.hasArg("STEPS")){
+      msg += "Steps Param Found \n\n";
+      OpenCloseSteps = server.arg("STEPS").toInt();
+      EepromSaveInt(eepromOpenCloseStepsStart, eepromOpenCloseStepsLen, OpenCloseSteps);
+      msg += "OpenCloseSteps Updated and saved";
+      server.send(200, "text/plain", msg);  
+  }
+  server.send(200, "text/plain", "Now Param Found: STEPS");    
+}
+
+void SetBlindOpen()
+{
+  String msg = "";
+  
+  if(currentLocation == 1)
+  {
+      msg += "Opening Blinds  \n\n";
+      
+      Direction = true;
+      ActionMotor(OpenCloseSteps, 1, true);
+      currentLocation = 2;
+      EepromSaveInt(eepromLocationStart, eepromLocationLen, currentLocation);
+      
+      msg += "Blinds Open";
+      server.send(200, "text/plain", msg);  
+  }
+  server.send(200, "text/plain", "Now In a valid State");    
+}
+
+void SetBlindClosed()
+{
+  String msg = "";
+  
+  if(currentLocation == 2)
+  {
+      msg += "Closing Blinds  \n\n";
+
+      Direction = false;
+      ActionMotor(OpenCloseSteps, 1, true);
+      
+      currentLocation = 1;
+      EepromSaveInt(eepromLocationStart, eepromLocationLen, currentLocation);
+
+      
+      msg += "Blinds Closed";
+      server.send(200, "text/plain", msg);  
+  }
+  server.send(200, "text/plain", "Now In a valid State");    
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void ActionMotor(int steps, int delayValue, bool turnOffMotor)
+{
+    if(MotorType == 1){
+      ProcessNemaMotorAction(steps, delayValue);
+    }
+    else if(MotorType == 2){
+      ProcessStep28MotorAction(steps, delayValue, turnOffMotor);
+    }
 }
 
 
@@ -178,25 +349,7 @@ void ProcessStep28MotorAction(int steps, int delayValue, bool turnOffMotor)
 
 
 
-void SetEnableMotor()
-{
-  String msg = "";
-  
-  if(server.hasArg("ENABLEPIN")){
-      msg += "Motor Param Found \n\n";
-      bool enablePinBool = server.arg("ENABLEPIN") == "1";
-      if(enablePinBool){
-        digitalWrite(stepPin,HIGH); 
-        server.send(200, "text/plain", "Pin Set HIGH");  
-      }
-      else{
-        digitalWrite(stepPin,LOW); 
-        server.send(200, "text/plain", "Pin Set LOW");  
-      }
-  }
-  server.send(200, "text/plain", "Now Param Found: ENABLEPIN");    
-  
-}
+
 
 
 
@@ -341,3 +494,63 @@ void handleNotFound()
   server.send(404, "text/plain", message);
   digitalWrite(led, 0);
 }
+
+String EepromGet(int loc, int locLen){
+  
+  int maxLen = (loc + locLen);
+  char rtnValue[locLen];
+  String rtnString = "";
+
+  for (int i = 0; i < locLen; i++) 
+  {     
+    char newVal;
+    rtnValue[i] = newVal;   
+  }
+  
+  for (int i = loc; i < maxLen; i++) {
+    int col = i - loc;
+    rtnValue[col] = EEPROM.read(i);
+    rtnString += rtnValue[col];
+  }
+  return rtnString;
+}
+
+
+void EepromSave(int loc, int ValueLength, String ValueString)
+{
+  for (int i = loc; i < (loc + ValueLength); i++) {
+    char emptyValue = ' ';
+    EEPROM.write(i, emptyValue);
+  }
+  for (int i = loc; i < (loc + ValueString.length()); i++) {
+    int charLoc = (i - loc);
+    char val = ValueString.charAt(charLoc);
+    EEPROM.write(i, val);
+  }
+  EEPROM.commit();
+}
+
+void EepromSaveInt(int loc, int ValueLength, int ValueInt)
+{
+    EepromSave(loc, ValueLength, String(ValueInt));
+}
+
+int EepromGetInt(int loc, int locLen){
+  String val = EepromGet(loc, locLen);
+  if(is_number(val)){
+    int i = val.toInt();
+    return i;  
+  }
+  return 0;
+}
+
+
+
+bool is_number(String str){
+   for(byte i=0;i<str.length();i++)
+   {
+      str.trim();
+      if(isDigit(str.charAt(i)) == false) return false;
+  }
+   return true;
+} 
