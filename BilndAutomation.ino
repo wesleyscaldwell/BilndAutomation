@@ -3,7 +3,7 @@
 #import "MainPageHtml.h"
 #include <EEPROM.h>
 
-  const char* ssid = "CGOffice"; //"MyWifi";  //"CGOffice"; //
+  const char* ssid = "MyWifi"; //"MyWifi";  //"CGOffice"; //
   const char* password = "3132143880";
   ESP8266WebServer server(80);
 
@@ -36,7 +36,8 @@
   uint8_t ConfigPin3 = D3;
   uint8_t ConfigPin4 = D4;
 #endif
-  
+
+  uint8_t ActivatePin = 16; //D0;
 
   const int enablePin = ConfigPin1; 
   const int stepPin = ConfigPin3; 
@@ -59,6 +60,8 @@ void setup(void) {
   pinMode(ConfigPin2, OUTPUT);
   pinMode(ConfigPin3, OUTPUT);
   pinMode(ConfigPin4, OUTPUT);
+
+  pinMode(ActivatePin, OUTPUT);
   
   digitalWrite(enablePin,LOW);
 
@@ -66,26 +69,17 @@ void setup(void) {
   digitalWrite(led, 0);
   Serial.begin(115200);
 
-  //EepromSave(0, 10, "test");
-  //EepromSave(10, 5, "n2-5");
-  //EepromSave(20, 3, "testing");
-  
-  //Serial.println("done saving");
-  //Serial.println(EepromGet(0, 10));
-  //Serial.println(EepromGet(10, 5));
-  //Serial.println(EepromGet(20, 3));
-  //Serial.println("done get");
   Serial.println("----");
   Serial.println(stepsPerRotation);
+
   int valSteps = EepromGetInt(eepromStepsStart,eepromStepsLen);
   if(valSteps > 0) {  stepsPerRotation = valSteps; }
 
   int valLocation = EepromGetInt(eepromLocationStart,eepromLocationLen);
   if(valLocation > 0) {  currentLocation = valLocation; }
-
+  
   int valOpenCloseSteps = EepromGetInt(eepromOpenCloseStepsStart,eepromOpenCloseStepsLen);
   if(valOpenCloseSteps > 0) {  OpenCloseSteps = valOpenCloseSteps; }
-
   //EepromSaveInt(30, 2, 12);
   //int val2 = EepromGetInt(30,2);
   
@@ -123,6 +117,10 @@ void setup(void) {
   server.on("/SetEnableMotor", SetEnableMotor);
   server.on("/SetBlindOpen", SetBlindOpen);
   server.on("/SetBlindClosed", SetBlindClosed);
+
+  server.on("/TurnRelayOn", []() {    server.send(200, "text/plain", "Turn Relay On"); digitalWrite(ActivatePin, HIGH);  });
+  server.on("/TurnRelayOff", []() {    server.send(200, "text/plain", "Turn Relay Off"); digitalWrite(ActivatePin, LOW);  });
+  
 
   server.on("/TurnOff", Step28TurnOffMotor);
 
@@ -315,12 +313,14 @@ void SetBlindClosed()
 
 void ActionMotor(int steps, int delayValue, bool turnOffMotor)
 {
+    digitalWrite(ActivatePin, HIGH);
     if(MotorType == 1){
       ProcessNemaMotorAction(steps, delayValue);
     }
     else if(MotorType == 2){
       ProcessStep28MotorAction(steps, delayValue, turnOffMotor);
     }
+    digitalWrite(ActivatePin, LOW);
 }
 
 
